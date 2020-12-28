@@ -1,0 +1,294 @@
+---
+jupyter:
+  jupytext:
+    text_representation:
+      extension: .Rmd
+      format_name: rmarkdown
+      format_version: '1.2'
+      jupytext_version: 1.7.1
+  kernelspec:
+    display_name: Python 3
+    language: python
+    name: python3
+---
+
+```{python}
+import pandas as pd
+import numpy as np
+
+```
+
+```{python}
+raw_df = pd.read_csv("loan_data.csv")
+raw_df.shape
+```
+
+```{python}
+#Getting a Statstical summary of data
+raw_df.describe()
+```
+
+```{python}
+# Getting the datatype and checking for null values if any
+raw_df.info()
+```
+
+```{python}
+raw_df['purpose'].value_counts()
+```
+
+```{python}
+# Encoding the categorical values to numerical
+purpose_encoded = pd.get_dummies(raw_df['purpose'])
+purpose_encoded.columns = ['purpose_all_other','purpose_credit_card','purpose_debt_consolidation',
+                           'purpose_educational','purpose_home_improvement','purpose_major_purchase',
+                          'purpose_small_business']
+purpose_encoded.head()
+```
+
+```{python}
+# adding the encoded columns to the df and droping the purpose column
+raw_df = raw_df.join(purpose_encoded)
+raw_df.drop(['purpose'],axis=1,inplace=True)
+raw_df.head()
+```
+
+```{python}
+raw_df['credit.policy'].value_counts()
+```
+
+```{python}
+c = ['credit.policy','int.rate','installment','log.annual.inc','dti','fico','days.with.cr.line','revol.bal','revol.util','inq.last.6mths','delinq.2yrs','pub.rec','not.fully.paid']
+temp_df = raw_df.loc[:,c]
+corr = temp_df.corr()
+```
+
+```{python}
+import seaborn as sns
+import matplotlib.pyplot as plt
+mask = np.zeros_like(corr)
+mask[np.triu_indices_from(mask)] = True
+with sns.axes_style("white"):
+    f, ax = plt.subplots(figsize=(25,20))
+    ax = sns.heatmap(corr, mask=mask, vmax=.3, square=True,annot=True,linewidth=.5)
+```
+
+```{python}
+# removing features with (+-)0.7 correlation -> fico and int.rate are highly correlated so removing fico
+raw_df = raw_df.drop(['fico'],axis=1)
+raw_df.head()
+```
+
+```{python}
+cols = raw_df.shape[1]-1
+x = raw_df.drop(['credit.policy'],axis=1).values
+y = raw_df['credit.policy'].values
+x.shape,y.shape,raw_df.shape,cols
+```
+
+```{python}
+from sklearn.preprocessing import StandardScaler
+sc = StandardScaler()
+x_t = sc.fit_transform(x)
+x_t
+```
+
+```{python}
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.layers import BatchNormalization
+from keras.optimizers import SGD, Adam
+from keras.layers import Dropout
+```
+
+```{python}
+model = Sequential()
+model.add(Dense(20, input_dim=cols, activation='relu', kernel_initializer='he_uniform'))
+model.add(BatchNormalization())
+model.add(Dense(30,kernel_initializer='he_uniform', activation='relu'))
+model.add(Dense(20,kernel_initializer='he_uniform', activation='relu'))
+model.add(Dense(1, activation='sigmoid'))
+```
+
+```{python}
+epoch=50
+lr = 0.001
+decay_rate = lr / epoch
+momentum = 0.9
+sgd = SGD(lr=lr, momentum=momentum, decay=decay_rate, nesterov=False)
+model.compile(loss='binary_crossentropy', optimizer=sgd, metrics=['accuracy'])
+```
+
+```{python}
+from sklearn.model_selection import train_test_split
+x_train, x_test, y_train, y_test = train_test_split(x_t, y, test_size=0.30, random_state=1)
+x_train.shape, x_test.shape
+```
+
+```{python}
+batch = int(x_train.shape[0]/50)
+nn_model = model.fit(x_train, y_train,validation_data=(x_test, y_test), epochs=epoch,batch_size = batch)
+```
+
+```{python}
+_, train_acc = model.evaluate(x_train, y_train, verbose=0)
+_, test_acc = model.evaluate(x_test, y_test, verbose=0)
+print('Train: %.3f, Test: %.3f' % (train_acc, test_acc))
+```
+
+```{python}
+import matplotlib.pyplot as plt
+plt.plot(nn_model.history['accuracy'])
+plt.plot(nn_model.history['val_accuracy'])
+plt.title('Model accuracy')
+plt.ylabel('Accuracy')
+plt.xlabel('Epoch')
+plt.legend(['Train', 'Test'], loc='upper left')
+plt.show()
+```
+
+```{python}
+plt.plot(nn_model.history['loss']) 
+plt.plot(nn_model.history['val_loss']) 
+plt.title('Model loss') 
+plt.ylabel('Loss') 
+plt.xlabel('Epoch') 
+plt.legend(['Train', 'Test'], loc='upper left') 
+plt.show()
+```
+
+Hyper parameter tunning
+
+```{python}
+from keras.wrappers.scikit_learn import KerasClassifier
+from sklearn.model_selection import GridSearchCV
+```
+
+```{python}
+s = x_train.shape[0]
+init_mode = ['glorot_normal', 'glorot_uniform', 'he_uniform']
+batch_size = [ int(s/20), int(s/50)]
+epochs = [75,100]
+optimizer = ['SGD', 'RMSprop', 'Adam']
+learn_rate = [0.001, 0.01]
+momentum = [0.0, 0.5, 0.9] 
+activation = ['softplus', 'softmax', 'relu']
+dropout_rate = [0.2, 0.4, 0.6, 0.8, 0.9]
+from keras.constraints import maxnorm
+def create_model(init_mode='glorot_normal',activation='relu',dropout_rate=0.0, learn_rate=0.001,
+                neuron=15,optimizer='Adam'):
+    model = Sequential()
+    model.add(Dense(neuron, input_dim=cols, activation=activation, kernel_initializer=init_mode))
+    model.add(BatchNormalization())
+    model.add(Dense(neuron, activation=activation))
+    model.add(Dropout(dropout_rate))
+    model.add(Dense(neuron, activation=activation))
+    model.add(Dense(1, activation='sigmoid'))
+    optimizer = Adam(learning_rate=learn_rate)
+    model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+    return model
+
+model_CV = KerasClassifier(build_fn=create_model, verbose=0,epochs=75, batch_size=134)
+param_grid = dict(init_mode=init_mode,batch_size=batch_size,epochs=epochs,activation=activation)
+grid_search = GridSearchCV(estimator=model_CV, param_grid=param_grid,cv=3,
+                           scoring='accuracy', verbose=10, n_jobs=2)
+result = grid_search.fit(x_train, y_train)
+
+```
+
+```{python}
+print(f'Best Accuracy for {result.best_score_} using {result.best_params_}\n')
+means = result.cv_results_['mean_test_score']
+stds = result.cv_results_['std_test_score']
+params = result.cv_results_['params']
+for mean, stdev, param in zip(means, stds, params):
+    print(f' mean={mean:.4}, std={stdev:.4} using {param}')
+
+```
+
+```{python}
+optimizer = ['SGD', 'RMSprop', 'Adam']
+learn_rate = [0.001, 0.01]
+momentum = [0.0, 0.5, 0.9] 
+dropout_rate = [0.2, 0.4, 0.6, 0.8, 0.9]
+# neurons = [10,15,20,25,30]
+from keras.constraints import maxnorm
+def create_model(init_mode='he_uniform',activation='relu',dropout_rate=0.0,
+                neuron=15,optimizer='Adam'):
+    model = Sequential()
+    model.add(Dense(neuron, input_dim=cols, activation=activation, kernel_initializer=init_mode))
+    model.add(BatchNormalization())
+    model.add(Dense(neuron, activation=activation))
+    model.add(Dropout(dropout_rate))
+    model.add(Dense(neuron, activation=activation))
+    model.add(Dense(1, activation='sigmoid'))
+    #optimizer = Adam(learning_rate=learn_rate)
+    model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+    return model
+
+
+model_CV = KerasClassifier(build_fn=create_model, verbose=0,epochs=100, batch_size=30)
+param_grid = dict(optimizer=optimizer,dropout_rate=dropout_rate)
+grid_search = GridSearchCV(estimator=model_CV, param_grid=param_grid,cv=3,
+                           scoring='accuracy', verbose=10,n_jobs=2)
+result = grid_search.fit(x_train, y_train)
+
+```
+
+```{python}
+print(f'Best Accuracy for {result.best_score_} using {result.best_params_}\n')
+means = result.cv_results_['mean_test_score']
+stds = result.cv_results_['std_test_score']
+params = result.cv_results_['params']
+for mean, stdev, param in zip(means, stds, params):
+    print(f' mean={mean:.4}, std={stdev:.4} using {param}')
+
+```
+
+Final Model Neural Network
+
+```{python}
+dr = 0.2
+model = Sequential()
+model.add(Dense(20, input_dim=cols, activation='relu', kernel_initializer='he_uniform'))
+model.add(BatchNormalization())
+model.add(Dense(30,kernel_initializer='he_uniform', activation='relu'))
+model.add(Dropout(dr))
+model.add(Dense(20,kernel_initializer='he_uniform', activation='relu'))
+model.add(Dropout(dr))
+model.add(Dense(20,kernel_initializer='he_uniform', activation='relu'))
+model.add(Dropout(dr))
+model.add(Dense(20,kernel_initializer='he_uniform', activation='relu'))
+model.add(Dense(1, activation='sigmoid'))
+epoch=20
+lr = 0.001
+decay_rate = lr / epoch
+momentum = 0.9
+optimizer = Adam(learning_rate=lr)
+model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+batch = 30 #int(x_train.shape[0]/50)
+nn_model = model.fit(x_train, y_train,validation_data=(x_test, y_test), epochs=epoch,batch_size = batch)
+_, train_acc = model.evaluate(x_train, y_train, verbose=0)
+_, test_acc = model.evaluate(x_test, y_test, verbose=0)
+print('Train: %.3f, Test: %.3f' % (train_acc, test_acc))
+plt.plot(nn_model.history['accuracy'])
+plt.plot(nn_model.history['val_accuracy'])
+plt.title('Model accuracy')
+plt.ylabel('Accuracy')
+plt.xlabel('Epoch')
+plt.legend(['Train', 'Test'], loc='upper left')
+plt.show()
+plt.plot(nn_model.history['loss']) 
+plt.plot(nn_model.history['val_loss']) 
+plt.title('Model loss') 
+plt.ylabel('Loss') 
+plt.xlabel('Epoch') 
+plt.legend(['Train', 'Test'], loc='upper left') 
+plt.show()
+```
+
+Accuracy : Train: 0.918, Test: 0.912
+
+```{python}
+
+```
